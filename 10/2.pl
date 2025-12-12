@@ -2,64 +2,86 @@
 
 use 5.36.0;
 use warnings;
+no warnings 'recursion';
 use strict;
-use Memoize;
+use Memoize qw(memoize flush_cache);
 use List::Util qw( min first );
 use Data::Dumper;
 
-#memoize('dfs', NORMALIZER => 'normalize');
-#memoize('subtract_button', NORMALIZER => 'normalize_subtract_button');
+memoize('dfs', NORMALIZER => 'normalize_dfs');
+memoize('subtract_button', NORMALIZER => 'normalize_subtract_button');
 
 my $total = 0;
 while (<>) {
     chomp;
     say;
     my ($buttons, $joltages) = / (.*) \{(.*)\}$/;
-    my @joltages = split ',', $joltages;
-    my @joltage_index = 
+    my @orig_joltages = split ',', $joltages;
+    my @joltage_index = invert(
         map { $_->[0] }
         sort { $b->[1] <=> $a->[1] }
-        map { [ $_, $joltages[$_] ] } 0..$#joltages;
-    my %joltage_index = map { $joltage_index[$_] => $_ } 0..$#joltages;
-    #say Dumper(\%joltage_index);
-    @joltages = sort { $b <=> $a } @joltages;
-    say "@joltages";
+        map { [ $_, $orig_joltages[$_] ] } 0..$#orig_joltages);
+    my @joltages = sort { $b <=> $a } @orig_joltages;
+    #say "@orig_joltages";
+    #say "@joltage_index";
+    #say "@joltages";
     my @buttons =
-                    map { my @indices = map {$joltage_index{$_}} split ','; button(scalar @joltages, @indices) }
+                    map { button(\@joltage_index, split ',') }
                     map { $_ = substr $_, 1, -1; }
-                    sort { length($b) <=> length($a) } split ' ', $buttons;
+                    sort { length($b) <=> length($a) }
+                    split ' ', $buttons;
     my $dim_buttons = dim_buttons(@buttons);
-    say map { "@{$_->{indices}}  " } @buttons;
-    #die;
-    #my $count = dfs(\@joltages, $dim_buttons);
-    #$total += $count;
-    #say "$. $count $total";
+    say normalize_dfs(\@joltages, $dim_buttons);
+#   die;
+    #say map { "(@{$_->{original}})->(@{$_->{indices}}) [@{$_->{vector}}]  " } @buttons;
+    my $count = dfs(\@joltages, $dim_buttons);
+    flush_cache('dfs');
+    $total += $count;
+    say "$. $count $total";
 }
 
 say $total;
+
+sub normalize_dfs {
+    my ($joltages, $dim_buttons) = @_;
+    my $s = "@$joltages";
+    for my $buttons (@$dim_buttons) {
+        $s .= "|";
+        $s .= join ',', map { "@{$_->{indices}}" } @$buttons if $buttons; 
+    }
+    #say $s;
+    return $s;
+}
 
 sub dfs {
     my ($joltages, $dim_buttons) = @_;
     
     pop @$joltages while @$joltages and $joltages->[-1] == 0;
-    pop @$dim_buttons while @$dim_buttons > @$joltages;
-
     return 1 unless @$joltages;
-    my $buttons = $dim_buttons->[$#$joltages];
-    die unless $buttons;
+    my $new_dim_buttons = @$dim_buttons > @$joltages ? [ @$dim_buttons[0..$#$joltages] ] : [ @$dim_buttons ];
+    my $buttons = $new_dim_buttons->[$#$joltages];
+    return 0 unless $buttons;
     my $min;
+
     for my $button (@$buttons) {
-        my ($zeroes, @new_joltages) = subtract_button($joltages, $button);
-        next unless defined $zeroes;
-        return 1 if $zeroes == @$joltages;
-        my $count = dfs($joltages, $dim_buttons);
-        next unless defined $count;
-        $count++;
-        $min = $count unless defined $min and $count >= $min;
+            my @new_joltages = subtract_button($joltages, 1, @{$button->{vector}});
+            last unless @new_joltages;
+            my $count = dfs(\@new_joltages, $new_dim_buttons);
+            next unless defined $count;
+            $count+=1;
+            $min = $count unless defined $min and $count >= $min;
     }
     return $min;
-
 }
+
+sub dfs_buttons {
+    my ($joltages, $i, $buttons) = @_;
+
+    if ($i == @$buttons) {
+        return 
+    }
+}
+
 
 sub dim_buttons {
     my @buttons = @_;
@@ -69,22 +91,33 @@ sub dim_buttons {
 }
 
 sub button {
-    my $length = shift;
-    my @indices = sort { $a <=> $b } @_;
-    my @vector = (0) x $length;
+    my $joltage_index = shift;
+    my @original = @_;
+    my @indices = sort { $a <=> $b } map { $joltage_index->[$_] } @original;
+    my @vector = (0) x @$joltage_index;
     $vector[$_] = 1 for @indices;
-    return { indices => \@indices, vector => \@vector };
+    return { indices => \@indices, vector => \@vector, original => \@original };
+}
+
+sub invert {
+    my @input = @_;
+    my @output = ();
+    @output[$input[$_]] = $_ for 0..$#input;
+    return @output;
 }
 
 sub subtract_button {
-    my ($joltages, $button) = @_;
+    my ($joltages, $mult, @vector) = @_;
     my @new_joltages = ();
-    my @zeroes = ();
-    for (my $i = 0; $i < @$joltages; $i++) {
-        my $new_joltage = $joltages->[$i] - $button->{indices}->[$i];
-        return undef if $new_joltage < 0;
-        push @zeroes, $i if $new_joltage == 0;
+    for (my $i = $#$joltages; $i >= 0; $i--) {
+        my $new_joltage = $joltages->[$i] - $vector[$i]*$mult;
+        return () if $new_joltage < 0;
         @new_joltages[$i] = $new_joltage;
     }
-    return \@zeroes, @new_joltages;
+    return @new_joltages;
+}
+
+sub normalize_subtract_button {
+    my ($joltages, @vector) = @_;
+    return "@$joltages-@vector";
 }
